@@ -149,6 +149,44 @@ class ImageDataset(Dataset):
         return img
 #%%
 
+
+class ImageBuffer(object):
+    def __init__(self, buffer_size):
+        self.buffer_size = buffer_size
+        if self.buffer_size > 0:
+            # the current capacity of the buffer
+            self.curr_cap = 0
+            # initialize buffer as empty list
+            self.buffer = []
+
+    def __call__(self, imgs):
+        # the buffer is not used
+        if self.buffer_size == 0:
+            return imgs
+
+        return_imgs = []
+        for img in imgs:
+            img = img.unsqueeze(dim=0)
+
+            # fill buffer to maximum capacity
+            if self.curr_cap < self.buffer_size:
+                self.curr_cap += 1
+                self.buffer.append(img)
+                return_imgs.append(img)
+            else:
+                p = np.random.uniform(low=0., high=1.)
+
+                # swap images between input and buffer with probability 0.5
+                if p > 0.5:
+                    idx = np.random.randint(low=0, high=self.buffer_size)
+                    tmp = self.buffer[idx].clone()
+                    self.buffer[idx] = img
+                    return_imgs.append(tmp)
+                else:
+                    return_imgs.append(img)
+        return torch.cat(return_imgs, dim=0)
+
+#%%
 # Transforms for the input images
 transform = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
@@ -161,6 +199,9 @@ dataloader_B = DataLoader(ImageDataset(surrealism_path, transform=transform), ba
 optimizer_G = torch.optim.Adam(list(G_A2B.parameters()) + list(G_B2A.parameters()), lr=0.0002, betas=(0.5, 0.999))
 optimizer_D_A = torch.optim.Adam(D_A.parameters(), lr=0.0002, betas=(0.5, 0.999))
 optimizer_D_B = torch.optim.Adam(D_B.parameters(), lr=0.0002, betas=(0.5, 0.999))
+
+buffer_fake_A = ImageBuffer(100)
+buffer_fake_B = ImageBuffer(100)
 
 # Losses
 criterion_GAN = torch.nn.MSELoss()
@@ -216,7 +257,7 @@ for epoch in range(n_epochs):
         loss_D_real = criterion_GAN(pred_real, Variable(torch.ones(pred_real.size()).to(device)))
 
         # Fake loss
-        pred_fake = D_A(fake_A.detach())
+        pred_fake = D_A(buffer_fake_A(fake_A.detach()))
         loss_D_fake = criterion_GAN(pred_fake, Variable(torch.zeros(pred_fake.size()).to(device)))
 
         # Total loss
@@ -233,7 +274,7 @@ for epoch in range(n_epochs):
         loss_D_real = criterion_GAN(pred_real, Variable(torch.ones(pred_real.size()).to(device)))
 
         # Fake loss
-        pred_fake = D_B(fake_B.detach())
+        pred_fake = D_B(buffer_fake_B(fake_B.detach()))
         loss_D_fake = criterion_GAN(pred_fake, Variable(torch.zeros(pred_fake.size()).to(device)))
 
         # Total loss
