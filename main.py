@@ -7,17 +7,19 @@ from torchvision import datasets, transforms
 from torch.autograd import Variable
 from PIL import Image
 import os
+import matplotlib.pyplot as plt
+import numpy as np
 
 #%%
-output_folder = path_to_folder + 'resized_surrealism'
-input_folder = path_to_folder + 'zdzislaw-beksinski'
+realism_path = os.getcwd() + '/resized_realism/'
+surrealism_path = os.getcwd() + '/resized_surrealism/'
 
 #%%
 # Define the generator (ResNet-based)
 
 
 class ResNetGenerator(nn.Module):
-    def __init__(self, input_nc, output_nc, ngf=64, n_blocks=9):
+    def __init__(self, input_nc, output_nc, ngf=64, n_blocks=3):
         assert(n_blocks >= 0)
         super(ResNetGenerator, self).__init__()
 
@@ -108,6 +110,16 @@ class NLayerDiscriminator(nn.Module):
 # Define input and output number of channels
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+t = torch.cuda.get_device_properties(0).total_memory
+r = torch.cuda.memory_reserved(0)
+a = torch.cuda.memory_allocated(0)
+f = r-a  # free inside reserved
+
+print("Total GPU Memory: ", t)
+print("Reserved Memory: ", r)
+print("Allocated Memory: ", a)
+print("Free within reserved: ", f)
+
 input_nc = 3
 output_nc = 3
 
@@ -142,8 +154,8 @@ transform = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
 # Dataloaders for your two image folders
-dataloader_A = DataLoader(ImageDataset(path_to_folder + 'resized_realism', transform=transform), batch_size=1, shuffle=True)
-dataloader_B = DataLoader(ImageDataset(path_to_folder + 'resized_surrealism', transform=transform), batch_size=1, shuffle=True)
+dataloader_A = DataLoader(ImageDataset(realism_path, transform=transform), batch_size=4, shuffle=True)
+dataloader_B = DataLoader(ImageDataset(surrealism_path, transform=transform), batch_size=4, shuffle=True)
 
 # Optimizers
 optimizer_G = torch.optim.Adam(list(G_A2B.parameters()) + list(G_B2A.parameters()), lr=0.0002, betas=(0.5, 0.999))
@@ -154,8 +166,14 @@ optimizer_D_B = torch.optim.Adam(D_B.parameters(), lr=0.0002, betas=(0.5, 0.999)
 criterion_GAN = torch.nn.MSELoss()
 criterion_cycle = torch.nn.L1Loss()
 
-n_epochs = 50
+n_epochs = 10
+avg_loss_D_A = []
+avg_loss_D_B = []
+avg_loss_G = []
 for epoch in range(n_epochs):
+    loss_D_A_list = []
+    loss_D_B_list = []
+    loss_G_list = []
     for i, (real_A, real_B) in enumerate(zip(dataloader_A, dataloader_B)):
         # Ensure they're on the right device
         real_A = Variable(real_A.to(device))
@@ -224,6 +242,146 @@ for epoch in range(n_epochs):
 
         optimizer_D_B.step()
 
+        loss_D_A_list.append(loss_D_A.item())
+        loss_D_B_list.append(loss_D_B.item())
+        loss_G_list.append(loss_G.item())
         print("Epoch: (%3d) (%5d/%5d) Loss_D_A: %.2f Loss_D_B: %.2f Loss_G: %.2f" %
               (epoch, i, len(dataloader_A), loss_D_A, loss_D_B, loss_G))
 
+    # Print and save example images every 5 epochs
+    if epoch % 5 == 0:
+        with torch.no_grad():
+            n_images = 5
+            real_A_iter = iter(dataloader_A)
+            real_B_iter = iter(dataloader_B)
+            transformed_A = []
+            transformed_B = []
+            original_A = []
+            original_B = []
+
+            for _ in range(n_images):
+                real_A = next(real_A_iter)
+                real_B = next(real_B_iter)
+                real_A = real_A.to(device)
+                real_B = real_B.to(device)
+
+                # Generate transformed images
+                fake_B = G_A2B(real_A)
+                fake_A = G_B2A(real_B)
+
+                transformed_A.append(fake_A)
+                transformed_B.append(fake_B)
+                original_A.append(real_A)
+                original_B.append(real_B)
+
+            # Concatenate the transformed images
+            transformed_A = torch.cat(transformed_A, dim=0)
+            transformed_B = torch.cat(transformed_B, dim=0)
+            original_A = torch.cat(original_A, dim=0)
+            original_B = torch.cat(original_B, dim=0)
+
+            # Prepare the images for display
+            transformed_A = (transformed_A + 1) / 2  # Convert from range [-1, 1] to [0, 1]
+            transformed_B = (transformed_B + 1) / 2
+            original_A = (original_A + 1) / 2
+            original_B = (original_B + 1) / 2
+
+            # Show the images in two columns
+            fig, axs = plt.subplots(n_images, 4, figsize=(12, 3*n_images))
+            fig.tight_layout()
+
+            for i in range(n_images):
+                # Display original image from column A
+                axs[i, 0].imshow(original_A[i].permute(1, 2, 0).detach().cpu().numpy())
+                axs[i, 0].axis('off')
+
+                # Display original image from column B
+                axs[i, 1].imshow(original_B[i].permute(1, 2, 0).detach().cpu().numpy())
+                axs[i, 1].axis('off')
+
+                # Display transformed image from column A
+                axs[i, 2].imshow(transformed_A[i].permute(1, 2, 0).detach().cpu().numpy())
+                axs[i, 2].axis('off')
+
+                # Display transformed image from column B
+                axs[i, 3].imshow(transformed_B[i].permute(1, 2, 0).detach().cpu().numpy())
+                axs[i, 3].axis('off')
+
+            # Save the figure
+            plt.savefig('images/epoch_{}.png'.format(epoch))
+            plt.close(fig)
+    avg_loss_D_A.append(np.mean(loss_D_A_list))
+    avg_loss_D_B.append(np.mean(loss_D_B_list))
+    avg_loss_G.append(np.mean(loss_G_list))
+
+#%%
+# Generar imágenes transformadas
+n_images = 5
+real_A_iter = iter(dataloader_A)
+real_B_iter = iter(dataloader_B)
+transformed_A = []
+transformed_B = []
+original_A = []
+original_B = []
+with torch.no_grad():
+    for _ in range(n_images):
+        real_A = next(real_A_iter)
+        real_B = next(real_B_iter)
+        real_A = real_A.to(device)
+        real_B = real_B.to(device)
+
+        # Generar imágenes transformadas
+        fake_B = G_A2B(real_A)
+        fake_A = G_B2A(real_B)
+
+        transformed_A.append(fake_A)
+        transformed_B.append(fake_B)
+        original_A.append(real_A)
+        original_B.append(real_B)
+
+    # Concatenar las imágenes transformadas
+    transformed_A = torch.cat(transformed_A, dim=0)
+    transformed_B = torch.cat(transformed_B, dim=0)
+    original_A = torch.cat(original_A, dim=0)
+    original_B = torch.cat(original_B, dim=0)
+
+    # Preparar las imágenes para mostrar
+    transformed_A = (transformed_A + 1) / 2  # Convertir de rango [-1, 1] a [0, 1]
+    transformed_B = (transformed_B + 1) / 2
+    original_A = (original_A + 1) / 2
+    original_B = (original_B + 1) / 2
+
+    # Mostrar las imágenes en dos columnas
+    fig, axs = plt.subplots(n_images, 4, figsize=(12, 3*n_images))
+    fig.tight_layout()
+
+    for i in range(n_images):
+        # Mostrar imagen original de la columna A
+        axs[i, 0].imshow(original_A[i].permute(1, 2, 0).detach().cpu().numpy())
+        axs[i, 0].axis('off')
+
+        # Mostrar imagen original de la columna B
+        axs[i, 1].imshow(original_B[i].permute(1, 2, 0).detach().cpu().numpy())
+        axs[i, 1].axis('off')
+
+        # Mostrar imagen transformada de la columna A
+        axs[i, 2].imshow(transformed_A[i].permute(1, 2, 0).detach().cpu().numpy())
+        axs[i, 2].axis('off')
+
+        # Mostrar imagen transformada de la columna B
+        axs[i, 3].imshow(transformed_B[i].permute(1, 2, 0).detach().cpu().numpy())
+        axs[i, 3].axis('off')
+
+    plt.show()
+
+#%%
+# Guardar los modelos
+torch.save({
+    'G_A2B_state_dict': G_A2B.state_dict(),
+    'G_B2A_state_dict': G_B2A.state_dict(),
+    'D_A_state_dict': D_A.state_dict(),
+    'D_B_state_dict': D_B.state_dict(),
+    'optimizer_G_state_dict': optimizer_G.state_dict(),
+    'optimizer_D_A_state_dict': optimizer_D_A.state_dict(),
+    'optimizer_D_B_state_dict': optimizer_D_B.state_dict(),
+}, 'model_checkpoint_5Epoch_Batch6.pth')
