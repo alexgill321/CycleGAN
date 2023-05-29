@@ -1,18 +1,18 @@
 import torch
 import torch.nn as nn
-import cv2
-import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
-from torchvision import datasets, transforms
+from torchvision import transforms
 from torch.autograd import Variable
 from PIL import Image
 import os
 import matplotlib.pyplot as plt
 import numpy as np
+import pickle
 
 #%%
-realism_path = os.getcwd() + '/resized_realism/'
-surrealism_path = os.getcwd() + '/resized_surrealism/'
+directory = os.getcwd()
+images_path = directory + '/image_data/resized_imgs/'
+surrealism_path = directory + '/image_data/resized_surrealism_sel/'
 
 #%%
 # Define the generator (ResNet-based)
@@ -107,6 +107,8 @@ class NLayerDiscriminator(nn.Module):
     def forward(self, input):
         return self.model(input)
 #%%
+
+
 # Define input and output number of channels
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -131,22 +133,37 @@ G_B2A = ResNetGenerator(output_nc, input_nc).to(device) # Generator for transfor
 D_A = NLayerDiscriminator(input_nc).to(device) # Discriminator for A
 D_B = NLayerDiscriminator(output_nc).to(device) # Discriminator for B
 #%%
+
+
 class ImageDataset(Dataset):
-    def __init__(self, directory, transform=None):
+    def __init__(self, directory_A, directory_B, transform=None):
         super().__init__()
-        self.directory = directory
+        self.directory_A = directory_A
+        self.directory_B = directory_B
         self.transform = transform
-        self.file_list = os.listdir(directory)
+        self.file_list_A = os.listdir(directory_A)
+        self.file_list_B = os.listdir(directory_B)
+        self.max_length = max(len(self.file_list_A), len(self.file_list_B))
 
     def __len__(self):
-        return len(self.file_list)
+        return self.max_length
 
     def __getitem__(self, idx):
-        img_path = os.path.join(self.directory, self.file_list[idx])
-        img = Image.open(img_path).convert('RGB')
+        idx_A = idx % len(self.file_list_A)
+        idx_B = idx % len(self.file_list_B)
+
+        img_path_A = os.path.join(self.directory_A, self.file_list_A[idx_A])
+        img_path_B = os.path.join(self.directory_B, self.file_list_B[idx_B])
+
+        img_A = Image.open(img_path_A).convert('RGB')
+        img_B = Image.open(img_path_B).convert('RGB')
+
         if self.transform:
-            img = self.transform(img)
-        return img
+            img_A = self.transform(img_A)
+            img_B = self.transform(img_B)
+
+        return img_A, img_B
+
 #%%
 
 
@@ -187,13 +204,18 @@ class ImageBuffer(object):
         return torch.cat(return_imgs, dim=0)
 
 #%%
+
+
 # Transforms for the input images
 transform = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
 # Dataloaders for your two image folders
-dataloader_A = DataLoader(ImageDataset(realism_path, transform=transform), batch_size=4, shuffle=True)
-dataloader_B = DataLoader(ImageDataset(surrealism_path, transform=transform), batch_size=4, shuffle=True)
+dataloader = DataLoader(
+    ImageDataset(images_path, surrealism_path, transform=transform),
+    batch_size=3,
+    shuffle=True
+)
 
 # Optimizers
 optimizer_G = torch.optim.Adam(list(G_A2B.parameters()) + list(G_B2A.parameters()), lr=0.0002, betas=(0.5, 0.999))
@@ -207,7 +229,7 @@ buffer_fake_B = ImageBuffer(100)
 criterion_GAN = torch.nn.MSELoss()
 criterion_cycle = torch.nn.L1Loss()
 
-n_epochs = 10
+n_epochs = 30
 avg_loss_D_A = []
 avg_loss_D_B = []
 avg_loss_G = []
@@ -215,7 +237,7 @@ for epoch in range(n_epochs):
     loss_D_A_list = []
     loss_D_B_list = []
     loss_G_list = []
-    for i, (real_A, real_B) in enumerate(zip(dataloader_A, dataloader_B)):
+    for i, (real_A, real_B) in enumerate(dataloader):
         # Ensure they're on the right device
         real_A = Variable(real_A.to(device))
         real_B = Variable(real_B.to(device))
@@ -287,22 +309,20 @@ for epoch in range(n_epochs):
         loss_D_B_list.append(loss_D_B.item())
         loss_G_list.append(loss_G.item())
         print("Epoch: (%3d) (%5d/%5d) Loss_D_A: %.2f Loss_D_B: %.2f Loss_G: %.2f" %
-              (epoch, i, len(dataloader_A), loss_D_A, loss_D_B, loss_G))
+              (epoch, i, len(dataloader), loss_D_A, loss_D_B, loss_G))
 
     # Print and save example images every 5 epochs
     if epoch % 5 == 0:
         with torch.no_grad():
             n_images = 5
-            real_A_iter = iter(dataloader_A)
-            real_B_iter = iter(dataloader_B)
+            iterator = iter(dataloader)
             transformed_A = []
             transformed_B = []
             original_A = []
             original_B = []
 
             for _ in range(n_images):
-                real_A = next(real_A_iter)
-                real_B = next(real_B_iter)
+                real_A, real_B = next(iterator)
                 real_A = real_A.to(device)
                 real_B = real_B.to(device)
 
@@ -347,10 +367,22 @@ for epoch in range(n_epochs):
                 # Display transformed image from column B
                 axs[i, 3].imshow(transformed_B[i].permute(1, 2, 0).detach().cpu().numpy())
                 axs[i, 3].axis('off')
-
+            plt.show()
+            img_file = directory + '/images/epoch_{}.png'.format(epoch)
             # Save the figure
-            plt.savefig('images/epoch_{}.png'.format(epoch))
+            plt.savefig(img_file)
             plt.close(fig)
+            data_directory = directory + '/data/losses'
+            avg_loss_D_A_file = data_directory + '/D_A_loss/epoch_{}.pkl'
+            avg_loss_D_B_file = data_directory + '/D_B_loss/epoch_{}.pkl'
+            avg_loss_G_file = data_directory + '/G_loss/epoch_{}.pkl'
+
+            with open(avg_loss_D_A_file.format(epoch), 'wb') as f:
+                pickle.dump(avg_loss_D_A, f)
+            with open(avg_loss_D_B_file.format(epoch), 'wb') as f:
+                pickle.dump(avg_loss_D_B, f)
+            with open(avg_loss_G_file.format(epoch), 'wb') as f:
+                pickle.dump(avg_loss_G, f)
     avg_loss_D_A.append(np.mean(loss_D_A_list))
     avg_loss_D_B.append(np.mean(loss_D_B_list))
     avg_loss_G.append(np.mean(loss_G_list))
@@ -358,16 +390,14 @@ for epoch in range(n_epochs):
 #%%
 # Generar imágenes transformadas
 n_images = 5
-real_A_iter = iter(dataloader_A)
-real_B_iter = iter(dataloader_B)
+iterator = iter(dataloader)
 transformed_A = []
 transformed_B = []
 original_A = []
 original_B = []
 with torch.no_grad():
     for _ in range(n_images):
-        real_A = next(real_A_iter)
-        real_B = next(real_B_iter)
+        real_A, real_B = next(iterator)
         real_A = real_A.to(device)
         real_B = real_B.to(device)
 
