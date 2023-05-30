@@ -8,8 +8,10 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pickle
+import time
 
 #%%
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 directory = os.getcwd()
 images_path = directory + '/image_data/resized_imgs/'
 surrealism_path = directory + '/image_data/resized_surrealism_sel/'
@@ -19,7 +21,7 @@ surrealism_path = directory + '/image_data/resized_surrealism_sel/'
 
 
 class ResNetGenerator(nn.Module):
-    def __init__(self, input_nc, output_nc, ngf=64, n_blocks=3):
+    def __init__(self, input_nc, output_nc, ngf=64, n_blocks=6):
         assert(n_blocks >= 0)
         super(ResNetGenerator, self).__init__()
 
@@ -204,18 +206,51 @@ class ImageBuffer(object):
         return torch.cat(return_imgs, dim=0)
 
 #%%
-
-
-# Transforms for the input images
 transform = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
 # Dataloaders for your two image folders
 dataloader = DataLoader(
     ImageDataset(images_path, surrealism_path, transform=transform),
-    batch_size=3,
+    batch_size=2,
     shuffle=True
 )
+
+val_iterator = iter(dataloader)
+#%%
+n_images = 5
+validation_a = []
+validation_b = []
+validation_a_use = []
+validation_b_use = []
+for _ in range(n_images):
+    val_A, val_B = next(val_iterator)
+    validation_a_use.append(val_A)
+    validation_b_use.append(val_B)
+# Concatenate the images
+validation_a = torch.cat(validation_a_use, dim=0)
+validation_b = torch.cat(validation_b_use, dim=0)
+
+# Prepare the images for display
+validation_a = (validation_a + 1) / 2  # Convert from range [-1, 1] to [0, 1]
+validation_b = (validation_b + 1) / 2
+
+
+# Show the images in two columns
+fig, axs = plt.subplots(n_images, 2, figsize=(6, 3*n_images))
+fig.tight_layout()
+
+for i in range(n_images):
+    # Display original image from column A
+    axs[i, 0].imshow(validation_a[i].permute(1, 2, 0).detach().cpu().numpy())
+    axs[i, 0].axis('off')
+
+    # Display original image from column B
+    axs[i, 1].imshow(validation_b[i].permute(1, 2, 0).detach().cpu().numpy())
+    axs[i, 1].axis('off')
+plt.show()
+#%%
+
 
 # Optimizers
 optimizer_G = torch.optim.Adam(list(G_A2B.parameters()) + list(G_B2A.parameters()), lr=0.0002, betas=(0.5, 0.999))
@@ -229,7 +264,7 @@ buffer_fake_B = ImageBuffer(100)
 criterion_GAN = torch.nn.MSELoss()
 criterion_cycle = torch.nn.L1Loss()
 
-n_epochs = 30
+n_epochs = 200
 avg_loss_D_A = []
 avg_loss_D_B = []
 avg_loss_G = []
@@ -237,6 +272,7 @@ for epoch in range(n_epochs):
     loss_D_A_list = []
     loss_D_B_list = []
     loss_G_list = []
+    start_time = time.time()
     for i, (real_A, real_B) in enumerate(dataloader):
         # Ensure they're on the right device
         real_A = Variable(real_A.to(device))
@@ -308,21 +344,23 @@ for epoch in range(n_epochs):
         loss_D_A_list.append(loss_D_A.item())
         loss_D_B_list.append(loss_D_B.item())
         loss_G_list.append(loss_G.item())
-        print("Epoch: (%3d) (%5d/%5d) Loss_D_A: %.2f Loss_D_B: %.2f Loss_G: %.2f" %
-              (epoch, i, len(dataloader), loss_D_A, loss_D_B, loss_G))
+        epoch_time = time.time() - start_time
+        print("Epoch: (%3d) (%5d/%5d) Loss_D_A: %.2f Loss_D_B: %.2f Loss_G: %.2f Time: %.2f" %
+              (epoch, i, len(dataloader), loss_D_A, loss_D_B, loss_G, epoch_time))
 
     # Print and save example images every 5 epochs
-    if epoch % 5 == 0:
+    if epoch % 1 == 0:
         with torch.no_grad():
             n_images = 5
-            iterator = iter(dataloader)
             transformed_A = []
             transformed_B = []
+            cycled_A = []
+            cycled_B = []
             original_A = []
             original_B = []
-
-            for _ in range(n_images):
-                real_A, real_B = next(iterator)
+            for i in range(n_images):
+                real_A = validation_a_use[i]
+                real_B = validation_b_use[i]
                 real_A = real_A.to(device)
                 real_B = real_B.to(device)
 
@@ -330,20 +368,30 @@ for epoch in range(n_epochs):
                 fake_B = G_A2B(real_A)
                 fake_A = G_B2A(real_B)
 
+                # Cycle back the images
+                cyc_A = G_B2A(fake_B)
+                cyc_B = G_A2B(fake_A)
+
                 transformed_A.append(fake_A)
                 transformed_B.append(fake_B)
+                cycled_A.append(cyc_A)
+                cycled_B.append(cyc_B)
                 original_A.append(real_A)
                 original_B.append(real_B)
 
-            # Concatenate the transformed images
+            # Concatenate the images
             transformed_A = torch.cat(transformed_A, dim=0)
             transformed_B = torch.cat(transformed_B, dim=0)
+            cycled_A = torch.cat(cycled_A, dim=0)
+            cycled_B = torch.cat(cycled_B, dim=0)
             original_A = torch.cat(original_A, dim=0)
             original_B = torch.cat(original_B, dim=0)
 
             # Prepare the images for display
             transformed_A = (transformed_A + 1) / 2  # Convert from range [-1, 1] to [0, 1]
             transformed_B = (transformed_B + 1) / 2
+            cycled_A = (cycled_A + 1) / 2
+            cycled_B = (cycled_B + 1) / 2
             original_A = (original_A + 1) / 2
             original_B = (original_B + 1) / 2
 
@@ -361,27 +409,66 @@ for epoch in range(n_epochs):
                 axs[i, 1].axis('off')
 
                 # Display transformed image from column A
-                axs[i, 2].imshow(transformed_A[i].permute(1, 2, 0).detach().cpu().numpy())
+                axs[i, 2].imshow(transformed_B[i].permute(1, 2, 0).detach().cpu().numpy())
                 axs[i, 2].axis('off')
 
                 # Display transformed image from column B
-                axs[i, 3].imshow(transformed_B[i].permute(1, 2, 0).detach().cpu().numpy())
+                axs[i, 3].imshow(transformed_A[i].permute(1, 2, 0).detach().cpu().numpy())
                 axs[i, 3].axis('off')
-            plt.show()
-            img_file = directory + '/images/epoch_{}.png'.format(epoch)
+            if not os.path.exists(directory + '/images'):
+                os.makedirs(directory + '/images')
+            img_file = directory + '/images/full_epoch_{}.png'.format(epoch)
             # Save the figure
             plt.savefig(img_file)
-            plt.close(fig)
-            data_directory = directory + '/data/losses'
-            avg_loss_D_A_file = data_directory + '/D_A_loss/epoch_{}.pkl'
-            avg_loss_D_B_file = data_directory + '/D_B_loss/epoch_{}.pkl'
-            avg_loss_G_file = data_directory + '/G_loss/epoch_{}.pkl'
 
-            with open(avg_loss_D_A_file.format(epoch), 'wb') as f:
+            plt.show()
+            plt.close(fig)
+
+            fig, axs = plt.subplots(n_images, 3, figsize=(12, 3*n_images))
+            fig.tight_layout()
+
+            for i in range(n_images):
+                # Display original image from column A
+                axs[i, 0].imshow(original_A[i].permute(1, 2, 0).detach().cpu().numpy())
+                axs[i, 0].axis('off')
+
+                # Display transformed image from column A
+                axs[i, 1].imshow(transformed_B[i].permute(1, 2, 0).detach().cpu().numpy())
+                axs[i, 1].axis('off')
+
+                # Display cycled image from column A
+                axs[i, 2].imshow(cycled_A[i].permute(1, 2, 0).detach().cpu().numpy())
+                axs[i, 2].axis('off')
+            img_file = directory + '/images/full_cycled_epoch_{}.png'.format(epoch)
+            if not os.path.exists(directory + '/images'):
+                os.makedirs(directory + '/images')
+            plt.savefig(img_file)
+
+            plt.show()
+
+            plt.close(fig)
+
+            data_directory = directory + '/data/losses'
+            avg_loss_D_A_dir = data_directory + '/D_A_loss/'
+            avg_loss_D_B_dir = data_directory + '/D_B_loss/'
+            avg_loss_G_dir = data_directory + '/G_loss/'
+
+            if not os.path.exists(avg_loss_D_A_dir):
+                os.makedirs(avg_loss_D_A_dir)
+            if not os.path.exists(avg_loss_D_B_dir):
+                os.makedirs(avg_loss_D_B_dir)
+            if not os.path.exists(avg_loss_G_dir):
+                os.makedirs(avg_loss_G_dir)
+
+            avg_loss_D_A_file = avg_loss_D_A_dir + 'epoch_{}.pkl'.format(epoch)
+            avg_loss_D_B_file = avg_loss_D_B_dir + 'epoch_{}.pkl'.format(epoch)
+            avg_loss_G_file = avg_loss_G_dir + 'epoch_{}.pkl'.format(epoch)
+
+            with open(avg_loss_D_A_file, 'wb') as f:
                 pickle.dump(avg_loss_D_A, f)
-            with open(avg_loss_D_B_file.format(epoch), 'wb') as f:
+            with open(avg_loss_D_B_file, 'wb') as f:
                 pickle.dump(avg_loss_D_B, f)
-            with open(avg_loss_G_file.format(epoch), 'wb') as f:
+            with open(avg_loss_G_file, 'wb') as f:
                 pickle.dump(avg_loss_G, f)
     avg_loss_D_A.append(np.mean(loss_D_A_list))
     avg_loss_D_B.append(np.mean(loss_D_B_list))
@@ -442,6 +529,84 @@ with torch.no_grad():
         # Mostrar imagen transformada de la columna B
         axs[i, 3].imshow(transformed_B[i].permute(1, 2, 0).detach().cpu().numpy())
         axs[i, 3].axis('off')
+
+    plt.show()
+
+#%%
+n_images = 5
+iterator = iter(dataloader)
+transformed_A = []
+transformed_B = []
+cycled_A = []
+cycled_B = []
+original_A = []
+original_B = []
+
+with torch.no_grad():
+    for _ in range(n_images):
+        real_A, real_B = next(iterator)
+        real_A = real_A.to(device)
+        real_B = real_B.to(device)
+
+        # Generate transformed images
+        fake_B = G_A2B(real_A)
+        fake_A = G_B2A(real_B)
+
+        # Cycle back the images
+        cycled_A = G_B2A(fake_B)
+        cycled_B = G_A2B(fake_A)
+
+        transformed_A.append(fake_A)
+        transformed_B.append(fake_B)
+        cycled_A.append(cycled_A)
+        cycled_B.append(cycled_B)
+        original_A.append(real_A)
+        original_B.append(real_B)
+
+    # Concatenate the images
+    transformed_A = torch.cat(transformed_A, dim=0)
+    transformed_B = torch.cat(transformed_B, dim=0)
+    cycled_A = torch.cat(cycled_A, dim=0)
+    cycled_B = torch.cat(cycled_B, dim=0)
+    original_A = torch.cat(original_A, dim=0)
+    original_B = torch.cat(original_B, dim=0)
+
+    # Prepare the images for display
+    transformed_A = (transformed_A + 1) / 2  # Convert from range [-1, 1] to [0, 1]
+    transformed_B = (transformed_B + 1) / 2
+    cycled_A = (cycled_A + 1) / 2
+    cycled_B = (cycled_B + 1) / 2
+    original_A = (original_A + 1) / 2
+    original_B = (original_B + 1) / 2
+
+    # Display the images in three columns
+    fig, axs = plt.subplots(n_images, 6, figsize=(18, 3*n_images))
+    fig.tight_layout()
+
+    for i in range(n_images):
+        # Display original image from column A
+        axs[i, 0].imshow(original_A[i].permute(1, 2, 0).detach().cpu().numpy())
+        axs[i, 0].axis('off')
+
+        # Display transformed image from column A
+        axs[i, 1].imshow(transformed_A[i].permute(1, 2, 0).detach().cpu().numpy())
+        axs[i, 1].axis('off')
+
+        # Display cycled image from column A
+        axs[i, 2].imshow(cycled_A[i].permute(1, 2, 0).detach().cpu().numpy())
+        axs[i, 2].axis('off')
+
+        # Display original image from column B
+        axs[i, 3].imshow(original_B[i].permute(1, 2, 0).detach().cpu().numpy())
+        axs[i, 3].axis('off')
+
+        # Display transformed image from column B
+        axs[i, 4].imshow(transformed_B[i].permute(1, 2, 0).detach().cpu().numpy())
+        axs[i, 4].axis('off')
+
+        # Display cycled image from column B
+        axs[i, 5].imshow(cycled_B[i].permute(1, 2, 0).detach().cpu().numpy())
+        axs[i, 5].axis('off')
 
     plt.show()
 
